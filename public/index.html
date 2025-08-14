@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>KL Bus Tracker - Functional App</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Leaflet.js for Interactive Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <!-- JSZip for unzipping GTFS static data -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- PapaParse for parsing CSV files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            overscroll-behavior-y: contain;
+        }
+        .view { display: none; }
+        .view.active { display: block; }
+        .bottom-sheet {
+            transition: transform 0.3s ease-in-out;
+            transform: translateY(100%);
+        }
+        .bottom-sheet.active { transform: translateY(0); }
+        .stops-accordion {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-in-out;
+        }
+        .stops-accordion.open { max-height: 500px; }
+        #loading-overlay {
+            transition: opacity 0.3s ease-in-out;
+        }
+        .leaflet-control-attribution {
+            font-size: 10px !important;
+        }
+        #map-container, #detail-map-container {
+            height: 100%;
+            width: 100%;
+        }
+    </style>
+</head>
+<body class="bg-gray-800">
+
+    <div class="max-w-md mx-auto bg-white min-h-screen flex flex-col relative">
+        <main class="flex-grow overflow-y-auto">
+            <!-- All views here -->
+            <div id="map-view" class="view active h-full">
+                <div class="relative h-full">
+                    <div class="absolute top-0 left-0 right-0 p-4 z-[1000]">
+                        <div class="relative">
+                            <input id="search-input" type="text" placeholder="Search for a bus number" class="w-full pl-10 pr-4 py-3 bg-white rounded-full shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"></i>
+                        </div>
+                    </div>
+                    <div id="map-container"></div>
+                </div>
+            </div>
+            <div id="search-view" class="view p-4">
+                <h2 class="text-2xl font-bold mb-4">Search Results</h2>
+                <div id="search-results-list" class="space-y-3"></div>
+            </div>
+            <div id="detail-view" class="view">
+                <div class="relative h-1/2">
+                     <button onclick="showView('map-view')" class="absolute top-4 left-4 z-[1000] bg-white rounded-full p-2 shadow-md h-10 w-10 flex items-center justify-center">
+                        <i class="fas fa-arrow-left text-gray-700"></i>
+                    </button>
+                    <div id="detail-map-container"></div>
+                </div>
+                <div class="p-4 bg-white -mt-4 rounded-t-2xl h-1/2 flex flex-col">
+                    <div class="mb-4" id="detail-bus-info"></div>
+                    <h4 class="font-semibold mb-2">Full Stop List</h4>
+                    <ul id="detail-stop-list" class="flex-grow overflow-y-auto space-y-2"></ul>
+                </div>
+            </div>
+            <div id="routes-view" class="view p-4">
+                <h2 class="text-2xl font-bold mb-4">All Bus Routes</h2>
+                <ul id="all-routes-list" class="space-y-2"></ul>
+            </div>
+        </main>
+
+        <footer class="sticky bottom-0 bg-white shadow-t-lg border-t border-gray-200 z-20">
+            <nav id="bottom-nav" class="flex justify-around">
+                <button data-view="map-view" class="flex-1 text-blue-600 p-3 text-center"><i class="fas fa-map-marked-alt text-xl"></i><span class="block text-xs font-medium">Map</span></button>
+                <button data-view="routes-view" class="flex-1 text-gray-500 p-3 text-center"><i class="fas fa-route text-xl"></i><span class="block text-xs font-medium">Routes</span></button>
+                <button data-view="fav-view" class="flex-1 text-gray-500 p-3 text-center"><i class="fas fa-star text-xl"></i><span class="block text-xs font-medium">Favourites</span></button>
+                <button data-view="profile-view" class="flex-1 text-gray-500 p-3 text-center"><i class="fas fa-user-circle text-xl"></i><span class="block text-xs font-medium">Profile</span></button>
+            </nav>
+        </footer>
+
+        <div id="bottom-sheet" class="bottom-sheet fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-white rounded-t-2xl shadow-lg z-[1001]">
+            <div class="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-4"></div>
+            <h3 id="bottom-sheet-title" class="text-lg font-bold mb-2">Stop Name</h3>
+            <ul id="bottom-sheet-bus-list" class="space-y-2"></ul>
+            <button onclick="hideBottomSheet()" class="w-full mt-4 bg-gray-200 text-gray-800 py-2 rounded-lg font-semibold">Close</button>
+        </div>
+        <div id="bottom-sheet-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-[1000] hidden" onclick="hideBottomSheet()"></div>
+        <div id="loading-overlay" class="fixed inset-0 bg-white bg-opacity-90 z-[2000] flex flex-col items-center justify-center">
+            <i class="fas fa-spinner fa-spin text-blue-500 text-4xl"></i>
+            <p id="loading-text" class="text-gray-700 mt-4 font-semibold">Initializing App...</p>
+        </div>
+    </div>
+
+<script>
+// =================================================================================
+// App State & Configuration
+// =================================================================================
+const AppState = {
+    gtfs: {},
+    realtime: [],
+    currentView: 'map-view',
+    userLocation: { lat: 3.1390, lon: 101.6869 },
+    maps: { main: null, detail: null },
+    layers: { main: L.layerGroup(), detail: L.layerGroup() },
+    icons: {}
+};
+
+// =================================================================================
+// Initialization
+// =================================================================================
+document.addEventListener('DOMContentLoaded', initApp);
+
+async function initApp() {
+    setupEventListeners();
+    initializeMaps();
+    try {
+        updateLoadingText('Downloading bus routes & stops...');
+        await fetchStaticData();
+        updateLoadingText('Getting live bus locations...');
+        await fetchRealtimeData();
+        renderMapIcons();
+        setInterval(fetchRealtimeDataAndUpdateMap, 15000);
+        hideLoadingOverlay();
+    } catch (error) {
+        console.error("Initialization failed:", error);
+        updateLoadingText(`Error: ${error.message}. Please refresh.`);
+    }
+}
+
+async function fetchRealtimeDataAndUpdateMap() {
+    await fetchRealtimeData();
+    if (AppState.currentView === 'map-view') {
+        renderMapIcons();
+    }
+}
+
+// =================================================================================
+// Data Fetching & Processing
+// =================================================================================
+async function fetchStaticData() {
+    const response = await fetch('https://api.data.gov.my/gtfs-static/prasarana?category=rapid-bus-kl');
+    if (!response.ok) throw new Error('Failed to download static data');
+    const blob = await response.blob();
+    const zip = await new JSZip().loadAsync(blob);
+    const filesToParse = ['routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt'];
+    for (const filename of filesToParse) {
+        const file = zip.file(filename);
+        if (file) {
+            const content = await file.async('string');
+            const parsed = Papa.parse(content, { header: true, skipEmptyLines: true });
+            AppState.gtfs[filename.replace('.txt', '')] = parsed.data;
+        }
+    }
+}
+
+/**
+ * Fetches real-time data from our Netlify serverless function.
+ */
+async function fetchRealtimeData() {
+    try {
+        // This is the endpoint for our serverless function
+        const response = await fetch('/.netlify/functions/getBuses');
+        if (!response.ok) {
+            throw new Error(`Netlify function failed with status: ${response.status}`);
+        }
+        const liveBuses = await response.json();
+        
+        // Match live data with static route info
+        AppState.realtime = liveBuses.map(bus => {
+            const routeInfo = AppState.gtfs.routes.find(r => r.route_id === bus.routeId);
+            return {
+                ...bus,
+                routeShortName: routeInfo ? routeInfo.route_short_name : 'Unknown',
+            };
+        });
+    } catch (error) {
+        console.error("Could not fetch real-time data:", error);
+        // Keep stale data on error, or clear it: AppState.realtime = [];
+    }
+}
+
+
+// =================================================================================
+// All other functions (initializeMaps, renderMapIcons, renderSearchResults, etc.)
+// remain the same as the previous version. They are included here for completeness.
+// =================================================================================
+function initializeMaps() {
+    AppState.icons.bus = L.divIcon({
+        html: `<div class="p-1.5 bg-blue-600 rounded-full shadow-lg border-2 border-white"><i class="fas fa-bus text-white text-xs"></i></div>`,
+        className: '', iconSize: [24, 24], iconAnchor: [12, 12]
+    });
+    AppState.icons.stop = L.divIcon({
+        html: `<div class="p-1 bg-red-500 rounded-full shadow"><i class="fas fa-map-marker-alt text-white text-xs"></i></div>`,
+        className: '', iconSize: [18, 18], iconAnchor: [9, 9]
+    });
+
+    AppState.maps.main = L.map('map-container', { zoomControl: false }).setView([AppState.userLocation.lat, AppState.userLocation.lon], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(AppState.maps.main);
+    AppState.layers.main.addTo(AppState.maps.main);
+
+    AppState.maps.detail = L.map('detail-map-container', { zoomControl: false }).setView([AppState.userLocation.lat, AppState.userLocation.lon], 15);
+     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(AppState.maps.detail);
+    AppState.layers.detail.addTo(AppState.maps.detail);
+}
+
+function renderMapIcons() {
+    const layer = AppState.layers.main;
+    layer.clearLayers();
+
+    L.circleMarker([AppState.userLocation.lat, AppState.userLocation.lon], {
+        radius: 8, color: 'white', weight: 2, fillColor: '#3B82F6', fillOpacity: 1
+    }).addTo(layer).bindPopup('Your Location');
+
+    AppState.gtfs.stops.slice(0, 50).forEach(stop => {
+        if(stop.stop_lat && stop.stop_lon) {
+            L.marker([stop.stop_lat, stop.stop_lon], { icon: AppState.icons.stop })
+                .addTo(layer)
+                .on('click', () => showBottomSheet(stop));
+        }
+    });
+
+    AppState.realtime.forEach(bus => {
+        if(bus.latitude && bus.longitude) {
+            L.marker([bus.latitude, bus.longitude], { icon: AppState.icons.bus })
+                .addTo(layer)
+                .on('click', () => renderRouteDetails(bus.routeId));
+        }
+    });
+}
+
+function renderSearchResults(query) {
+    const list = document.getElementById('search-results-list');
+    list.innerHTML = '';
+    
+    if (!query) {
+        showView('map-view');
+        return;
+    }
+    showView('search-view');
+    
+    const results = AppState.gtfs.routes.filter(r => r.route_short_name.toLowerCase().includes(query.toLowerCase()));
+    if (results.length === 0) {
+        list.innerHTML = `<p class="text-gray-500 text-center">No routes found for "${query}".</p>`;
+        return;
+    }
+    results.slice(0, 10).forEach(route => {
+        const liveInfo = AppState.realtime.find(b => b.routeId === route.route_id);
+        const card = document.createElement('div');
+        card.className = 'bg-white rounded-lg shadow p-4';
+        card.innerHTML = `
+            <div class="flex justify-between items-center">
+                <div>
+                    <h3 class="text-lg font-bold">Bus ${route.route_short_name}</h3>
+                    <p class="text-sm text-gray-500">${route.route_long_name}</p>
+                    <p class="text-sm text-green-600 font-semibold">${liveInfo ? `Live on map` : 'No live data'}</p>
+                </div>
+                <button class="text-gray-500 p-2" onclick="toggleAccordion(this, '${route.route_id}')"><i class="fas fa-chevron-down transition-transform"></i></button>
+            </div>
+            <div class="stops-accordion mt-2 border-t pt-2"></div>
+            <button class="w-full mt-3 bg-blue-600 text-white py-2 rounded-lg font-semibold" onclick="renderRouteDetails('${route.route_id}')">View Live Route</button>
+        `;
+        list.appendChild(card);
+    });
+}
+
+function renderRouteDetails(routeId) {
+    const route = AppState.gtfs.routes.find(r => r.route_id === routeId);
+    const liveInfo = AppState.realtime.find(b => b.routeId === routeId);
+    if (!route) return;
+
+    showView('detail-view');
+
+    document.getElementById('detail-bus-info').innerHTML = `
+        <h3 class="text-xl font-bold">Bus ${route.route_short_name}</h3>
+        <p class="text-gray-600">Status: <span class="font-semibold text-black">${liveInfo ? 'Live' : 'No live data'}</span></p>
+    `;
+
+    const layer = AppState.layers.detail;
+    layer.clearLayers();
+    const trip = AppState.gtfs.trips.find(t => t.route_id === routeId);
+    if (trip) {
+        const stopTimes = AppState.gtfs.stop_times.filter(st => st.trip_id === trip.trip_id).sort((a,b) => a.stop_sequence - b.stop_sequence);
+        const stopIds = stopTimes.map(st => st.stop_id);
+        const stops = AppState.gtfs.stops.filter(s => stopIds.includes(s.stop_id));
+        const latlngs = stops.map(s => [s.stop_lat, s.stop_lon]).filter(ll => ll[0] && ll[1]);
+
+        if (latlngs.length > 0) {
+            L.polyline(latlngs, { color: '#3B82F6', weight: 5 }).addTo(layer);
+            stops.forEach(s => L.marker([s.stop_lat, s.stop_lon], { icon: AppState.icons.stop }).addTo(layer));
+            AppState.maps.detail.fitBounds(latlngs, { padding: [20, 20] });
+        }
+        
+        if(liveInfo && liveInfo.latitude && liveInfo.longitude) {
+             L.marker([liveInfo.latitude, liveInfo.longitude], { icon: AppState.icons.bus }).addTo(layer);
+        }
+
+        document.getElementById('detail-stop-list').innerHTML = stops.map((stop, index) => `
+            <li class="flex items-center p-2 rounded-lg ${index === 3 ? 'bg-blue-100' : ''}">
+                <i class="fas fa-map-marker-alt mr-3 ${index === 3 ? 'text-blue-600' : 'text-red-500'}"></i>
+                <span class="font-medium ${index === 3 ? 'text-blue-700' : 'text-gray-800'}">${stop.stop_name}</span>
+            </li>
+        `).join('');
+    }
+}
+
+function renderAllRoutes() {
+    const list = document.getElementById('all-routes-list');
+    if (!AppState.gtfs.routes) {
+        list.innerHTML = `<p class="text-gray-500">Routes are still loading...</p>`;
+        return;
+    }
+    list.innerHTML = AppState.gtfs.routes.map(route => `
+        <li class="p-3 bg-gray-50 rounded-lg shadow-sm cursor-pointer hover:bg-gray-100" onclick="renderRouteDetails('${route.route_id}')">
+            <div class="flex justify-between items-center">
+                <div>
+                    <p class="font-bold text-blue-600">Bus ${route.route_short_name}</p>
+                    <p class="text-sm text-gray-600">${route.route_long_name}</p>
+                </div>
+                <i class="fas fa-chevron-right text-gray-400"></i>
+            </div>
+        </li>
+    `).join('');
+}
+
+function debounce(func, delay) {
+    let timeout;
+    return function(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), delay);
+    };
+}
+
+function setupEventListeners() {
+    const searchInput = document.getElementById('search-input');
+    const debouncedSearch = debounce((e) => renderSearchResults(e.target.value), 300);
+    searchInput.addEventListener('input', debouncedSearch);
+
+    document.getElementById('bottom-nav').addEventListener('click', (e) => {
+        const button = e.target.closest('button');
+        if (button?.dataset.view) {
+            if (AppState.currentView === 'search-view') searchInput.value = '';
+            showView(button.dataset.view);
+            document.querySelectorAll('#bottom-nav button').forEach(btn => btn.classList.replace('text-blue-600', 'text-gray-500'));
+            button.classList.replace('text-gray-500', 'text-blue-600');
+        }
+    });
+}
+
+function showView(viewId) {
+    if (!document.getElementById(viewId)) {
+        alert(`View "${viewId}" not found. Feature not implemented.`);
+        return;
+    }
+    document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+    document.getElementById(viewId).classList.add('active');
+    AppState.currentView = viewId;
+
+    if (viewId === 'map-view') {
+        setTimeout(() => AppState.maps.main.invalidateSize(), 10);
+    }
+    if (viewId === 'detail-view') {
+        setTimeout(() => AppState.maps.detail.invalidateSize(), 10);
+    }
+    if (viewId === 'routes-view') {
+        renderAllRoutes();
+    }
+}
+
+function showBottomSheet(stop) {
+    document.getElementById('bottom-sheet-title').textContent = stop.stop_name;
+    document.getElementById('bottom-sheet-bus-list').innerHTML = AppState.realtime.slice(0, 3).map(bus => `
+        <li><i class="fas fa-bus text-blue-500 mr-2"></i> ${bus.routeShortName} 
+            <span class="float-right font-semibold text-green-600">Live</span>
+        </li>
+    `).join('');
+    document.getElementById('bottom-sheet').classList.add('active');
+    document.getElementById('bottom-sheet-overlay').classList.remove('hidden');
+}
+
+function hideBottomSheet() {
+    document.getElementById('bottom-sheet').classList.remove('active');
+    document.getElementById('bottom-sheet-overlay').classList.add('hidden');
+}
+
+function toggleAccordion(button, routeId) {
+    const icon = button.querySelector('i');
+    const accordion = button.parentElement.nextElementSibling;
+    icon.classList.toggle('rotate-180');
+    accordion.classList.toggle('open');
+    if (accordion.classList.contains('open') && accordion.innerHTML === '') {
+        const trip = AppState.gtfs.trips.find(t => t.route_id === routeId);
+        if(trip) {
+            const stopTimes = AppState.gtfs.stop_times.filter(st => st.trip_id === trip.trip_id);
+            const stopIds = stopTimes.map(st => st.stop_id);
+            const stops = AppState.gtfs.stops.filter(s => stopIds.includes(s.stop_id));
+            accordion.innerHTML = `<ul class="space-y-1 text-sm text-gray-600">${stops.slice(0,5).map(s => `<li>- ${s.stop_name}</li>`).join('')}</ul>`;
+        } else {
+            accordion.innerHTML = `<p class="text-xs text-gray-500">Could not load stops.</p>`;
+        }
+    }
+}
+
+function updateLoadingText(text) {
+    document.getElementById('loading-text').textContent = text;
+}
+
+function hideLoadingOverlay() {
+    const overlay = document.getElementById('loading-overlay');
+    overlay.style.opacity = 0;
+    setTimeout(() => overlay.style.display = 'none', 300);
+}
+</script>
+</body>
+</html>
