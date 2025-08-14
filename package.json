@@ -12,7 +12,7 @@
     "node": "18"
   },
   "dependencies": {
-    "gtfs-realtime-bindings": "^0.0.9",
+    "gtfs-realtime-bindings": "^1.1.1",
     "node-fetch": "^2.6.1"
   }
 }
